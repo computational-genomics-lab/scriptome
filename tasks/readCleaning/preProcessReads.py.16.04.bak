@@ -1,0 +1,506 @@
+import luigi
+import time
+import os
+import subprocess
+from tasks.readCleaning.cleanedReadQC import *
+
+class GlobalParameter(luigi.Config):
+	paired_end_read_dir = luigi.Parameter()
+	mate_pair_read_dir = luigi.Parameter()
+	single_end_read_dir = luigi.Parameter()
+	paired_end_interleaved_read_dir = luigi.Parameter()
+	mate_pair_interleaved_read_dir = luigi.Parameter()
+	long_read_dir=luigi.Parameter()
+	paired_end_read_suffix = luigi.Parameter()
+	single_end_read_suffix = luigi.Parameter()
+	paired_end_interleaved_read_suffix = luigi.Parameter()
+	mate_pair_read_suffix = luigi.Parameter()
+	mate_pair_interleaved_read_suffix = luigi.Parameter()
+	long_read_suffix = luigi.Parameter()
+	threads = luigi.Parameter()
+	maxMemory = luigi.Parameter()
+	
+
+def run_cmd(cmd):
+	p = subprocess.Popen(cmd, bufsize=-1,
+				 shell=True,
+				 universal_newlines=True,
+				 stdout=subprocess.PIPE,
+				 executable='/bin/bash')
+	output = p.communicate()[0]
+	return output
+
+def createFolder(directory):
+	try:
+		if not os.path.exists(directory):
+			os.makedirs(directory)
+	except OSError:
+		print ('Error: Creating directory. ' + directory)
+
+createFolder("task_logs")
+
+class bbduk(luigi.Task):
+	paired_end_read_dir = GlobalParameter().paired_end_read_dir
+	mate_pair_read_dir = GlobalParameter().mate_pair_read_dir
+	single_end_read_dir = GlobalParameter().single_end_read_dir
+	paired_end_interleaved_read_dir = GlobalParameter().paired_end_interleaved_read_dir
+	mate_pair_interleaved_read_dir = GlobalParameter().mate_pair_interleaved_read_dir
+	long_read_dir = GlobalParameter().long_read_dir
+	paired_end_read_suffix = GlobalParameter().paired_end_read_suffix
+	paired_end_interleaved_read_suffix = GlobalParameter().paired_end_interleaved_read_suffix
+	mate_pair_read_suffix = GlobalParameter().mate_pair_read_suffix
+	mate_pair_interleaved_read_suffix = GlobalParameter().mate_pair_interleaved_read_suffix
+	single_end_read_suffix = GlobalParameter().single_end_read_suffix
+	long_read_suffix = GlobalParameter().long_read_suffix
+
+	threads = GlobalParameter().threads
+	maxMemory = GlobalParameter().threads
+
+
+	projectName = luigi.Parameter(default="CleanedReads")
+	sampleName = luigi.Parameter(description="name of the sample to be analyzed. (string)")
+	adapter = luigi.Parameter(default="./tasks/utility/adapters.fasta.gz")
+
+	kmer_length=luigi.OptionalParameter(default="21",description="Kmer length used for finding contaminants. Contaminants "
+														 "shorter than kmer length will not be found.Default: 21")
+	corret_error=luigi.BoolParameter(default=False,description="Perform Error Correction Or Not")
+
+	k_trim = luigi.ChoiceParameter(default="r",description="Trimming protocol to remove bases matching reference kmers from reads. "
+											   "Choose From['f: dont trim','r: trim to right','l: trin to left]",
+								   choices=["f", "r", "l"], var_type=str)
+	quality_trim=luigi.ChoiceParameter(default="lr",description="Trimming protocol to remove bases with quality below the minimum "
+												   "average region quality from read ends. Performed after looking for kmers."
+												   " If enabled, set also 'Average quality below which to trim region'. "
+												   "Choose From['f: trim neither end', 'rl: trim both end','r: trim only right end','l: trim only left end]",
+								   choices=["f", "lr", "r","l"], var_type=str)
+
+	trim_quality = luigi.IntParameter(description="Average quality below which to trim region ",default=6)
+
+	read_library_type = luigi.ChoiceParameter(description="Choose From['pe: paired-end','mp: mate-pair','pe-mp: paired-end and mate-pair',"
+											   "'ilpe: interleaved paired-end','ilmp: interleaved mate-pair',"
+											   "'ilpe-ilmp: interleaved paired-end and interleaved mate-pair']",
+									choices=["se","pe", "mp","pe-mp","pe-mp-se","ilpe","ilmp","ilpe-ilmp"],var_type=str)
+
+	min_length = luigi.OptionalParameter(default="20",description="reads shorter than min_length will be discarded. Default: "
+													"min_length=20")
+	min_average_quality = luigi.OptionalParameter(default="10", description="Reads with average quality (after trimming) below "
+																"this will be discarded. Default: min_average_quality=10")
+	min_base_quality = luigi.OptionalParameter(default="0",description="Reads with any base below this quality (after trimming) will be discarded. "
+																"Default: min_base_quality=0")
+	min_GC = luigi.OptionalParameter(default="0.0", description="Discard reads with GC content below this. Default: min_gc=0.001")
+	max_GC = luigi.OptionalParameter(default="1.0", description="Discard reads with GC content below this. Default: max_gc=0.999")
+	kmer = luigi.OptionalParameter(default="13", description="Kmer length used for finding contaminants. Default: kmer=13")
+
+	trim_front = luigi.Parameter(default="0", description="trimming how many bases in front for read. Default: "
+														  "trim_front=0")
+	trim_tail = luigi.Parameter(default="0", description="trimming how many bases in tail for read. Default: "
+														  "trim_tail=0")
+	max_n=luigi.IntParameter(default=-1,description="Maximum number of Ns after trimming [maxns=-1]. "
+												   "If non-negative, reads with more Ns than this (after trimming) will be discarded.")
+	trim_by_overlap=luigi.Parameter(default="",description="Trim adapters based on where paired-end reads overlap [tbo]")
+	trim_pairs_evenly=luigi.Parameter(default="", description="Trim both sequences of paired-end reads to the minimum length of either sequence "
+																 "[tpe]")
+
+
+
+	def output(self):
+		se_clean_read_folder = os.path.join(os.getcwd(), self.projectName, "Cleaned_SE_Reads" + "/")
+		pe_clean_read_folder = os.path.join(os.getcwd(), self.projectName, "Cleaned_PE_Reads" + "/")
+		mp_clean_read_folder = os.path.join(os.getcwd(), self.projectName, "Cleaned_MP_Reads" + "/")
+		
+		if self.read_library_type == "pe" or self.read_library_type == "ilpe":
+			return {'out1': luigi.LocalTarget(pe_clean_read_folder + self.sampleName + "_R1.fastq"),
+					'out2': luigi.LocalTarget(pe_clean_read_folder + self.sampleName + "_R2.fastq")}
+
+		if self.read_library_type == "se":
+			return {'out1': luigi.LocalTarget(se_clean_read_folder + self.sampleName + ".fastq")}
+
+		if self.read_library_type == "mp" or self.read_library_type == "ilmp":
+			return {'out1': luigi.LocalTarget(mp_clean_read_folder + self.sampleName + "_R1.fastq"),
+					'out2': luigi.LocalTarget(mp_clean_read_folder + self.sampleName + "_R2.fastq")}
+
+		if self.read_library_type == "pe-mp" or self.read_library_type == "ilpe-ilmp":
+			return {'out1': luigi.LocalTarget(pe_clean_read_folder + self.sampleName + "_R1.fastq"),
+					'out2': luigi.LocalTarget(pe_clean_read_folder + self.sampleName + "_R2.fastq"),
+					'out3': luigi.LocalTarget(mp_clean_read_folder + self.sampleName + "_R1.fastq"),
+					'out4': luigi.LocalTarget(mp_clean_read_folder + self.sampleName + "_R2.fastq")}
+
+		if self.read_library_type == "pe-mp-se":
+			return {'out1': luigi.LocalTarget(pe_clean_read_folder + self.sampleName + "_R1.fastq"),
+					'out2': luigi.LocalTarget(pe_clean_read_folder + self.sampleName + "_R2.fastq"),
+					'out3': luigi.LocalTarget(mp_clean_read_folder + self.sampleName + "_R1.fastq"),
+					'out4': luigi.LocalTarget(mp_clean_read_folder + self.sampleName + "_R2.fastq"),
+					'out5': luigi.LocalTarget(se_clean_read_folder + self.sampleName + ".fastq")}
+
+		
+	def run(self):
+		se_clean_read_folder = os.path.join(os.getcwd(), self.projectName, "Cleaned_SE_Reads" + "/")
+		pe_clean_read_folder = os.path.join(os.getcwd(), self.projectName, "Cleaned_PE_Reads" + "/")
+		mp_clean_read_folder = os.path.join(os.getcwd(), self.projectName, "Cleaned_MP_Reads" + "/")
+
+		read_clean_log_folder = os.path.join(os.getcwd(), "log","ReadCleaning" + "/")
+
+		bbduk_se_clean_stat_folder = os.path.join(os.getcwd(), self.projectName, "Cleaned_SE_Reads_STAT" + "/")
+		bbduk_pe_clean_stat_folder = os.path.join(os.getcwd(), self.projectName, "Cleaned_PE_Reads_STAT" + "/")
+		bbduk_mp_clean_stat_folder = os.path.join(os.getcwd(), self.projectName, "Cleaned_MP_Reads_STAT" + "/")
+
+		
+		cmd_clean_pe = "[ -d  {pe_clean_read_folder} ] || mkdir -p {pe_clean_read_folder}; " \
+					   "mkdir -p {bbduk_pe_clean_stat_folder}; mkdir -p {read_clean_log_folder}; bbduk.sh " \
+					   "-Xmx{Xmx}g " \
+					   "threads={cpu} " \
+					   "ecco={corret_error} " \
+					   "minlength={min_length} " \
+					   "minavgquality={min_average_quality} " \
+					   "minbasequality={min_base_quality} " \
+					   "trimq={trim_quality} " \
+					   "qtrim={quality_trim} " \
+					   "ftl={trim_front} " \
+					   "ftr2={trim_tail} " \
+					   "mingc={min_GC} " \
+					   "maxgc={max_GC} " \
+					   "maxns={max_n} " \
+					   "{trim_by_overlap} " \
+					   "{trim_pairs_evenly} " \
+					   "in1={paired_end_read_dir}{sampleName}_R1.{paired_end_read_suffix} " \
+					   "in2={paired_end_read_dir}{sampleName}_R2.{paired_end_read_suffix} " \
+					   "out={pe_clean_read_folder}{sampleName}_R1.fastq " \
+					   "out2={pe_clean_read_folder}{sampleName}_R2.fastq " \
+					   "ziplevel=9 " \
+					   "ref={adapter} " \
+					   "stats={bbduk_pe_clean_stat_folder}{sampleName}.stat " \
+					   "bqhist={bbduk_pe_clean_stat_folder}{sampleName}.qual.hist " \
+					   "gchist={bbduk_pe_clean_stat_folder}{sampleName}.gc.hist " \
+					   " 2>{read_clean_log_folder}{sampleName}_pe_bbduk_run.log "\
+			.format(Xmx=GlobalParameter().maxMemory,
+					cpu=GlobalParameter().threads,
+					paired_end_read_dir=os.path.join(GlobalParameter().paired_end_read_dir),
+					paired_end_read_suffix=GlobalParameter().paired_end_read_suffix,
+					sampleName=self.sampleName,
+					corret_error=self.corret_error,
+					adapter=self.adapter,
+					pe_clean_read_folder=pe_clean_read_folder,
+					min_length=self.min_length,
+					min_average_quality=self.min_average_quality,
+					min_base_quality=self.min_base_quality,
+					trim_quality=self.trim_quality,
+					quality_trim=self.quality_trim,
+					trim_front=self.trim_front,
+					trim_tail=self.trim_tail,
+					min_GC=self.min_GC, max_n=self.max_n,
+					max_GC=self.max_GC,
+					kmer=self.kmer,
+					trim_by_overlap=self.trim_by_overlap,
+					trim_pairs_evenly=self.trim_pairs_evenly,
+					bbduk_pe_clean_stat_folder=bbduk_pe_clean_stat_folder,
+					read_clean_log_folder=read_clean_log_folder)
+
+		##################
+		cmd_clean_mp = "[ -d  {mp_clean_read_folder} ] || mkdir -p {mp_clean_read_folder}; " \
+					   "mkdir -p {bbduk_mp_clean_stat_folder}; mkdir -p {read_clean_log_folder}; bbduk.sh " \
+					   "-Xmx{Xmx}g " \
+					   "threads={cpu} " \
+					   "ecco={corret_error} " \
+					   "minlength={min_length} " \
+					   "minavgquality={min_average_quality} " \
+					   "minbasequality={min_base_quality} " \
+					   "trimq={trim_quality} " \
+					   "qtrim={quality_trim} " \
+					   "ftl={trim_front} " \
+					   "ftr2={trim_tail} " \
+					   "mingc={min_GC} " \
+					   "maxgc={max_GC} " \
+					   "maxns={max_n} " \
+					   "{trim_by_overlap} " \
+					   "{trim_pairs_evenly} " \
+					   "in1={mate_pair_read_dir}{sampleName}_R1.{mate_pair_read_suffix} " \
+					   "in2={mate_pair_read_dir}{sampleName}_R2.{mate_pair_read_suffix} " \
+					   "out={mp_clean_read_folder}{sampleName}_R1.fastq " \
+					   "out2={mp_clean_read_folder}{sampleName}_R2.fastq " \
+					   "ziplevel=9 " \
+					   "ref={adapter} " \
+					   "stats={bbduk_mp_clean_stat_folder}{sampleName}.stat " \
+					   "bqhist={bbduk_mp_clean_stat_folder}{sampleName}.qual.hist " \
+					   "gchist={bbduk_mp_clean_stat_folder}{sampleName}.gc.hist " \
+					   " 2>{read_clean_log_folder}{sampleName}_mp_bbduk_run.log " \
+			.format(Xmx=GlobalParameter().maxMemory,
+					cpu=GlobalParameter().threads,
+					mate_pair_read_dir=GlobalParameter().mate_pair_read_dir,
+					mate_pair_read_suffix=GlobalParameter().mate_pair_read_suffix,
+					sampleName=self.sampleName,
+					corret_error=self.corret_error,
+					adapter=self.adapter,
+					mp_clean_read_folder=mp_clean_read_folder,
+					min_length=self.min_length,
+					min_average_quality=self.min_average_quality,
+					min_base_quality=self.min_base_quality,
+					trim_quality=self.trim_quality,quality_trim=self.quality_trim,
+					trim_front=self.trim_front,
+					trim_tail=self.trim_tail,
+					min_GC=self.min_GC, max_n=self.max_n,
+					max_GC=self.max_GC,
+					kmer=self.kmer,
+					trim_by_overlap=self.trim_by_overlap,
+					trim_pairs_evenly=self.trim_pairs_evenly,
+					bbduk_mp_clean_stat_folder=bbduk_mp_clean_stat_folder,
+					read_clean_log_folder=read_clean_log_folder)
+		##################
+
+		cmd_clean_se = "[ -d  {se_clean_read_folder} ] || mkdir -p {se_clean_read_folder}; " \
+					   "mkdir -p {bbduk_se_clean_stat_folder}; mkdir -p {read_clean_log_folder}; bbduk.sh " \
+					   "-Xmx{Xmx}g " \
+					   "threads={cpu} " \
+					   "minlength={min_length} " \
+					   "minavgquality={min_average_quality} " \
+					   "minbasequality={min_base_quality} " \
+					   "mingc={min_GC} " \
+					   "maxgc={max_GC} " \
+					   "trimq={trim_quality} " \
+					   "qtrim={quality_trim} " \
+					   "ftl={trim_front} " \
+					   "ftr2={trim_tail} " \
+					   "in={single_end_read_dir}{sampleName}.{single_end_read_suffix} " \
+					   "out={se_clean_read_folder}{sampleName}.fastq " \
+					   "ziplevel=9 ref={adapter} " \
+					   "stats={bbduk_se_clean_stat_folder}{sampleName}.stat " \
+					   "bqhist={bbduk_se_clean_stat_folder}{sampleName}.qual.hist " \
+					   "gchist={bbduk_se_clean_stat_folder}{sampleName}.gc.hist " \
+					   " 2>{read_clean_log_folder}{sampleName}_se_bbduk_run.log ".format(Xmx=GlobalParameter().maxMemory,
+											single_end_read_dir=GlobalParameter().single_end_read_dir,
+					   						single_end_read_suffix=GlobalParameter().single_end_read_suffix,
+											cpu=GlobalParameter().threads,
+											sampleName=self.sampleName,
+											adapter=self.adapter,
+											se_clean_read_folder=se_clean_read_folder,
+											trim_quality=self.trim_quality,
+											quality_trim=self.quality_trim,
+											min_average_quality=self.min_average_quality,
+											min_base_quality=self.min_base_quality,
+											trim_front=self.trim_front,
+											trim_tail=self.trim_tail,
+											min_length=self.min_length,
+											min_GC=self.min_GC,
+											max_GC=self.max_GC,
+											kmer=self.kmer,
+											read_clean_log_folder=read_clean_log_folder,
+											bbduk_se_clean_stat_folder=bbduk_se_clean_stat_folder)
+
+		if self.read_library_type == "pe":
+			print("****** NOW RUNNING COMMAND ******: " + cmd_clean_pe)
+			print(run_cmd(cmd_clean_pe))
+
+		if self.read_library_type == "mp":
+			print("****** NOW RUNNING COMMAND ******: " + cmd_clean_mp)
+			print(run_cmd(cmd_clean_mp))
+
+		if self.read_library_type == "se":
+			print("****** NOW RUNNING COMMAND ******: " + cmd_clean_se)
+			print(run_cmd(cmd_clean_se))
+
+		if self.read_library_type == "pe-mp":
+			print("****** NOW RUNNING COMMAND ******: " + cmd_clean_pe)
+			print(run_cmd(cmd_clean_pe))
+			print("****** NOW RUNNING COMMAND ******: " + cmd_clean_mp)
+			print(run_cmd(cmd_clean_mp))
+		if self.read_library_type == "pe-mp-se":
+			print("****** NOW RUNNING COMMAND ******: " + cmd_clean_pe)
+			print(run_cmd(cmd_clean_pe))
+			print("****** NOW RUNNING COMMAND ******: " + cmd_clean_mp)
+			print(run_cmd(cmd_clean_mp))
+			print("****** NOW RUNNING COMMAND ******: " + cmd_clean_se)
+			print(run_cmd(cmd_clean_se))
+	
+
+class cleanShortReads(luigi.Task):
+	
+	read_library_type = luigi.ChoiceParameter(description="Choose From['pe: paired-end','mp: mate-pair','pe-mp: paired-end and mate-pair',"
+												"'ilpe: interleaved paired-end','ilmp: interleaved mate-pair',"
+												"'ilpe-ilmp: interleaved paired-end and interleaved mate-pair']",
+									choices=["se","pe", "mp", "pe-mp","pe-mp-se", "ilpe", "ilmp", "ilpe-ilmp"],var_type=str)
+
+
+	def requires(self):
+
+		if self.read_library_type == "pe":
+			return [
+
+					[bbduk(read_library_type=self.read_library_type,
+						sampleName=i)
+					for i in [line.strip()
+							  for line in
+							  open((os.path.join(os.getcwd(), "sample_list", "pe_samples.lst")))]],
+
+					[readqc(read_library_type=self.read_library_type,
+									sampleName=i)
+					for i in [line.strip()
+							  for line in
+							  open((os.path.join(os.getcwd(), "sample_list", "pe_samples.lst")))]]
+			       ]
+
+
+		if self.read_library_type == "se":
+			return [[bbduk(read_library_type=self.read_library_type,
+						sampleName=i)
+					for i in [line.strip()
+							  for line in
+							  open((os.path.join(os.getcwd(), "sample_list", "se_samples.lst")))]],
+
+					[readqc(read_library_type=self.read_library_type,
+							sampleName=i)
+					 for i in [line.strip()
+							   for line in
+							   open((os.path.join(os.getcwd(), "sample_list", "se_samples.lst")))]]
+					]
+
+
+		if self.read_library_type == "mp":
+			return [[bbduk(read_library_type=self.read_library_type,
+						   sampleName=i)
+					for i in [line.strip()
+							  for line in
+							  open((os.path.join(os.getcwd(),"sample_list", "mp_samples.lst")))]],
+
+					[readqc(read_library_type=self.read_library_type,
+							sampleName=i)
+					 for i in [line.strip()
+							   for line in
+							   open((os.path.join(os.getcwd(), "sample_list", "mp_samples.lst")))]]
+					]
+
+
+		if self.read_library_type == "pe-mp":
+
+			return [
+						[bbduk(read_library_type="pe",sampleName=i)
+								for i in [line.strip()
+										  for line in
+												open((os.path.join(os.getcwd(), "sample_list","pe_samples.lst")))]],
+
+						[bbduk(read_library_type="mp", sampleName=i)
+								for i in [line.strip()
+										  for line in
+												open((os.path.join(os.getcwd(), "sample_list","mp_samples.lst")))]],
+
+						[readqc(read_library_type="pe",
+									sampleName=i)
+								for i in [line.strip()
+						   				 for line in
+						  						open((os.path.join(os.getcwd(), "sample_list", "pe_samples.lst")))]],
+
+						[readqc(read_library_type="mp",
+									sampleName=i)
+				 				for i in [line.strip()
+						   				 for line in
+						   						open((os.path.join(os.getcwd(), "sample_list", "mp_samples.lst")))]]
+				  ]
+
+		if self.read_library_type == "pe-mp-se":
+
+			return [
+						[bbduk(read_library_type="pe",sampleName=i)
+								for i in [line.strip()
+										  for line in
+												open((os.path.join(os.getcwd(), "sample_list","pe_samples.lst")))]],
+
+						[bbduk(read_library_type="mp", sampleName=i)
+								for i in [line.strip()
+										  for line in
+												open((os.path.join(os.getcwd(), "sample_list","mp_samples.lst")))]],
+
+						[bbduk(read_library_type="se", sampleName=i)
+								for i in [line.strip()
+						   				  for line in
+						   						open((os.path.join(os.getcwd(), "sample_list", "se_samples.lst")))]],
+						[readqc(read_library_type="pe", sampleName=i)
+				 				for i in [line.strip()
+						   				for line in
+						  						 open((os.path.join(os.getcwd(), "sample_list", "pe_samples.lst")))]],
+
+						[readqc(read_library_type="mp", sampleName=i)
+				 				for i in [line.strip()
+						   				for line in
+						   						open((os.path.join(os.getcwd(), "sample_list", "mp_samples.lst")))]],
+
+						[readqc(read_library_type="se", sampleName=i)
+				 				for i in [line.strip()
+						   				for line in
+						   						open((os.path.join(os.getcwd(), "sample_list", "se_samples.lst")))]]
+				  	]
+
+	def output(self):
+		timestamp = time.strftime('%Y%m%d.%H%M%S', time.localtime())
+		return luigi.LocalTarget(os.path.join(os.getcwd(),"task_logs",'task.clean.shortread.complete.{t}'.format(t=timestamp)))
+
+	def run(self):
+		timestamp = time.strftime('%Y%m%d.%H%M%S', time.localtime())
+		with self.output().open('w') as outfile:
+			outfile.write('short read processing finished at {t}'.format(t=timestamp))
+
+
+class filtlong(luigi.Task):
+	threads=GlobalParameter().threads
+	long_read_dir = GlobalParameter().long_read_dir
+	long_read_suffix=GlobalParameter().long_read_suffix
+	projectName = luigi.Parameter(default="CleanedReads")
+	sampleName = luigi.Parameter(description="name of the sample to be analyzed. (string)")
+	min_length = luigi.Parameter(default="1000")
+	mean_quality = luigi.Parameter(default="80", description="The mean quality is the mean read identity as indicated by the "
+													 "Phred quality scores. Example: example, consider a read where all the fastq quality characters are +. "
+													 "The qscores for each base are 10 which equates to a 90% chance of being correct. "
+													 "This read would then have a mean quality score of 90. "
+													 "Read mean qualities are converted to a z-score and scaled to the range 0-100 to make the mean quality score. "
+													 "This means that the read with the worst mean quality in the input set will get a mean quality score of 0 "
+													 "and the read with the best mean quality will get a mean quality score of 100."
+													 " Default: meanQ=80")
+
+	keep_percent = luigi.Parameter(default="90", description="The percentage of the best reads to be retained."
+													  " Default: keep_percent=90")
+
+	def output(self):
+		lr_clean_read_folder = os.path.join(os.getcwd(), self.projectName, "Cleaned_Long_Reads" + "/")
+		return {'out': luigi.LocalTarget(lr_clean_read_folder + self.sampleName + ".fastq")}
+
+	def run(self):
+		lr_clean_read_folder = os.path.join(os.getcwd(), self.projectName, "Cleaned_Long_Reads" + "/")
+
+		cmd_clean_lr = "[ -d  {lr_clean_read_folder} ] || mkdir -p {lr_clean_read_folder}; " \
+					   "cd {lr_clean_read_folder}; " \
+					   "filtlong --min_length {min_length} " \
+					   "--keep_percent {keep_percent} " \
+					   "--min_mean_q {mean_quality} " \
+					   "{long_read_dir}{sampleName}.{lrsuffix} > {lr_clean_read_folder}{sampleName}.fastq "\
+		.format(long_read_dir=GlobalParameter().longreadDir,
+					   						lrsuffix=GlobalParameter().lrsuffix,
+											sampleName=self.sampleName,
+											lr_clean_read_folder=lr_clean_read_folder,
+											keep_percent=self.keep_percent,
+											mean_quality=self.mean_quality,
+											min_length=self.min_length)
+
+		print("****** NOW RUNNING COMMAND ******: " + cmd_clean_lr)
+		print(run_cmd(cmd_clean_lr))
+
+
+class cleanLongReads(luigi.Task):
+
+	def requires(self):
+		return [
+				[filtlong(sampleName=i)
+				for i in [line.strip()
+						  for line in
+						  open((os.path.join(os.getcwd(), "sample_list", "lr_samples.lst")))]],
+
+				[readqc(read_library_type="lr", sampleName=i)
+				 for i in [line.strip()
+						   for line in
+						   open((os.path.join(os.getcwd(), "sample_list", "lr_samples.lst")))]]
+				]
+
+	def output(self):
+		timestamp = time.strftime('%Y%m%d.%H%M%S', time.localtime())
+		return luigi.LocalTarget(os.path.join(os.getcwd(),"task_logs",'task.clean.longread.complete.{t}'.format(t=timestamp)))
+
+	def run(self):
+		timestamp = time.strftime('%Y%m%d.%H%M%S', time.localtime())
+		with self.output().open('w') as outfile:
+			outfile.write('long read processing finished at {t}'.format(t=timestamp))
