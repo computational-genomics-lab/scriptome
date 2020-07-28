@@ -1,0 +1,301 @@
+import luigi
+import time
+import os
+import subprocess
+
+
+class GlobalParameter(luigi.Config):
+	pairedendDir = luigi.Parameter()
+	matepairDir = luigi.Parameter()
+	singleendDir = luigi.Parameter()
+	peInterleavedDir = luigi.Parameter()
+	mpInterleavedDir = luigi.Parameter()
+	projectName = luigi.Parameter()
+	threads = luigi.Parameter()
+	maxMemory = luigi.Parameter()
+	suffix = luigi.Parameter()
+
+def run_cmd(cmd):
+	p = subprocess.Popen(cmd, bufsize=-1,
+				 shell=True,
+				 universal_newlines=True,
+				 stdout=subprocess.PIPE,
+				 executable='/bin/bash')
+	output = p.communicate()[0]
+	return output
+
+
+class deDup(luigi.Task):
+    projectName=GlobalParameter().projectName
+
+    libType = luigi.ChoiceParameter(description="Choose From['pe: paired-end','mp: mate-pair','pe-mp: paired-end and mate-pair',"
+                                                "'ilpe: interleaved paired-end','ilmp: interleaved mate-pair',"
+                                                "'ilpe-ilmp: interleaved paired-end and interleaved mate-pair']",
+                                    choices=["se","pe","mp","pe-mp","ilpe","ilmp","ilpe-ilmp"], var_type=str)
+
+    sampleName = luigi.Parameter(description="name of the sample to be analyzed. (string)")
+
+    def output(self):
+
+        mp_dedup_read_folder = os.path.join(os.getcwd(), GlobalParameter().projectName, "deDuplicatedReads","mate-pair" + "/")
+        pe_dedup_read_folder = os.path.join(os.getcwd(), GlobalParameter().projectName, "deDuplicatedReads","pair-end" + "/")
+		se_dedup_read_folder = os.path.join(os.getcwd(), GlobalParameter().projectName, "deDuplicatedReads","single-end" + "/")
+
+        if self.libType == "pe":
+            return {'out1': luigi.LocalTarget(pe_dedup_read_folder + self.sampleName + "_R1.fastq"),
+                    'out2': luigi.LocalTarget(pe_dedup_read_folder + self.sampleName + "_R2.fastq")}
+
+        if self.libType == "mp":
+            return {'out1': luigi.LocalTarget(mp_dedup_read_folder + self.sampleName + "_R1.fastq"),
+                    'out2': luigi.LocalTarget(mp_dedup_read_folder + self.sampleName + "_R2.fastq")}
+
+		if self.libType == "se":
+            return {'out': luigi.LocalTarget(mp_dedup_read_folder + self.sampleName + ".fastq")}
+
+        if self.libType == "pe,mp":
+            return {'out1': luigi.LocalTarget(pe_dedup_read_folder + self.sampleName + "_R1.fastq"),
+                    'out2': luigi.LocalTarget(pe_dedup_read_folder + self.sampleName + "_R2.fastq"),
+                    'out3': luigi.LocalTarget(mp_dedup_read_folder + self.sampleName + "_R1.fastq"),
+                    'out4': luigi.LocalTarget(mp_dedup_read_folder + self.sampleName + "_R2.fastq")}
+
+        if self.libType == "ilpe":
+            return {'out1': luigi.LocalTarget(pe_dedup_read_folder + self.sampleName + "_R1.fastq"),
+                    'out2': luigi.LocalTarget(pe_dedup_read_folder + self.sampleName + "_R2.fastq")}
+
+        if self.libType == "ilmp":
+            return {'out1': luigi.LocalTarget(mp_dedup_read_folder + self.sampleName + "_R1.fastq"),
+                    'out2': luigi.LocalTarget(mp_dedup_read_folder + self.sampleName + "_R2.fastq")}
+
+        if self.libType == "ilpe,ilmp":
+            return {'out1': luigi.LocalTarget(pe_dedup_read_folder + self.sampleName + "_R1.fastq"),
+                    'out2': luigi.LocalTarget(pe_dedup_read_folder + self.sampleName + "_R2.fastq"),
+                    'out3': luigi.LocalTarget(mp_dedup_read_folder + self.sampleName + "_R1.fastq"),
+                    'out4': luigi.LocalTarget(mp_dedup_read_folder + self.sampleName + "_R2.fastq")}
+    def run(self):
+
+        mp_dedup_read_folder = os.path.join(os.getcwd(), GlobalParameter().projectName, "deDuplicatedReads","mate-pair" + "/")
+		se_dedup_read_folder = os.path.join(os.getcwd(), GlobalParameter().projectName, "deDuplicatedReads","single-end" + "/")
+        pe_dedup_read_folder = os.path.join(os.getcwd(), GlobalParameter().projectName, "deDuplicatedReads","pair-end" + "/")
+        dedupicate_log_folder = os.path.join(os.getcwd(), GlobalParameter().projectName, "log","deduplicate_reads" + "/")
+
+        cmd_dedup_pe = "[ -d  {pe_dedup_read_folder} ] || mkdir -p {pe_dedup_read_folder}; mkdir -p {dedupicate_log_folder}; " \
+                        "cd {pe_dedup_read_folder}; clumpify.sh dedupe=t " \
+                        "-Xmx{Xmx}g " \
+                        "threads={threads} " \
+                        "in1={pairedendDir}{sampleName}_R1.{suffix} " \
+                        "in2={pairedendDir}{sampleName}_R2.{suffix} " \
+                        "out={pe_dedup_read_folder}{sampleName}_R1.fastq " \
+                        "out2={pe_dedup_read_folder}{sampleName}_R2.fastq " \
+                        "ziplevel=9 2>{dedupicate_log_folder}{sampleName}_dedup.log " \
+                        .format(sampleName=self.sampleName,
+                        suffix=GlobalParameter().suffix,
+                        pe_dedup_read_folder=pe_dedup_read_folder,dedupicate_log_folder=dedupicate_log_folder,
+                        Xmx=GlobalParameter().maxMemory,
+                        threads=GlobalParameter().threads,
+                        pairedendDir=os.path.join(GlobalParameter().pairedendDir + "/"))
+
+        cmd_dedup_mp = "[ -d  {mp_dedup_read_folder} ] || mkdir -p {mp_dedup_read_folder}; mkdir -p {dedupicate_log_folder}; " \
+                        "cd {mp_dedup_read_folder}; clumpify.sh dedupe=t " \
+                        "-Xmx{Xmx}g " \
+                        "threads={threads} " \
+                        "in1={matepairDir}{sampleName}_R1.{suffix} " \
+                        "in2={matepairDir}{sampleName}_R2.{suffix} " \
+                        "out={mp_dedup_read_folder}{sampleName}_R1.fastq " \
+                        "out2={mp_dedup_read_folder}{sampleName}_R2.fastq " \
+                        "ziplevel=9 2>{dedupicate_log_folder}{sampleName}_dedup.log " \
+                        .format(sampleName=self.sampleName,
+                    suffix=GlobalParameter().suffix,
+                    mp_dedup_read_folder=mp_dedup_read_folder,
+                    dedupicate_log_folder=dedupicate_log_folder,
+                    Xmx=GlobalParameter().maxMemory,
+                    threads=GlobalParameter().threads,
+                    matepairDir=os.path.join(GlobalParameter().matepairDir + "/"))
+
+		cmd_dedup_se = "[ -d  {se_dedup_read_folder} ] || mkdir -p {se_dedup_read_folder}; mkdir -p {se_dedup_read_folder}; " \
+                           "cd {se_dedup_read_folder}; clumpify.sh dedupe=t " \
+                           "-Xmx{Xmx}g " \
+                           "threads={threads} " \
+                           "in={singleendDir}{sampleName}.{suffix} " \
+                           "out={se_dedup_read_folder}{sampleName}.fastq " \
+                           "ziplevel=9 2>{dedupicate_log_folder}{sampleName}_dedup.log " \
+                           .format(sampleName=self.sampleName,
+                    suffix=GlobalParameter().suffix,
+                    se_dedup_read_folder=se_dedup_read_folder,
+                    dedupicate_log_folder=dedupicate_log_folder,
+                    Xmx=GlobalParameter().maxMemory,
+                    threads=GlobalParameter().threads,
+                    singleendDir=os.path.join(GlobalParameter().singleendDir + "/"))
+
+        cmd_dedup_pe_il = "[ -d  {pe_dedup_read_folder} ] || mkdir -p {pe_dedup_read_folder}; mkdir -p {dedupicate_log_folder}; " \
+                           "cd {pe_dedup_read_folder}; clumpify.sh dedupe=t " \
+                          "-Xmx{Xmx}g " \
+                          "threads={threads} " \
+                          "in={peInterleavedDir}{sampleName}.{suffix} " \
+                          "out={pe_dedup_read_folder}{sampleName}_R1.fastq " \
+                          "out2={pe_dedup_read_folder}{sampleName}_R2.fastq " \
+                          "ziplevel=9 2>{dedupicate_log_folder}{sampleName}_dedup.log " \
+                          .format(sampleName=self.sampleName,
+                    suffix=GlobalParameter().suffix,
+                    pe_dedup_read_folder=pe_dedup_read_folder,
+                    dedupicate_log_folder=dedupicate_log_folder,
+                    Xmx=GlobalParameter().maxMemory,
+                    threads=GlobalParameter().threads,
+                    peInterleavedDir=os.path.join(GlobalParameter().peInterleavedDir + "/"))
+
+        cmd_dedup_mp_il = "[ -d  {mp_dedup_read_folder} ] || mkdir -p {mp_dedup_read_folder}; mkdir -p {dedupicate_log_folder}; " \
+                           "cd {mp_dedup_read_folder}; clumpify.sh dedupe=t " \
+                           "-Xmx{Xmx}g " \
+                           "threads={threads} " \
+                           "in={mpInterleavedDir}{sampleName}.{suffix} " \
+                           "out={mp_dedup_read_folder}{sampleName}_R1.fastq " \
+                           "out2={mp_dedup_read_folder}{sampleName}_R2.fastq " \
+                           "ziplevel=9 2>{dedupicate_log_folder}{sampleName}_dedup.log " \
+                           .format(sampleName=self.sampleName,
+                    suffix=GlobalParameter().suffix,
+                    mp_dedup_read_folder=mp_dedup_read_folder,
+                    dedupicate_log_folder=dedupicate_log_folder,
+                    Xmx=GlobalParameter().maxMemory,
+                    threads=GlobalParameter().threads,
+                    mpInterleavedDir=os.path.join(GlobalParameter().mpInterleavedDir + "/"))
+
+
+        if self.libType == "pe":
+            print("****** NOW RUNNING COMMAND ******: " + cmd_dedup_pe)
+            print(run_cmd(cmd_dedup_pe))
+
+		if self.libType == "se":
+			print("****** NOW RUNNING COMMAND ******: " + cmd_dedup_se)
+			print(run_cmd(cmd_dedup_se))
+
+        if self.libType == "mp":
+            print("****** NOW RUNNING COMMAND ******: " + cmd_dedup_mp)
+            print(run_cmd(cmd_dedup_mp))
+
+        if self.libType == "pe-mp":
+            print("****** NOW RUNNING COMMAND ******: " + cmd_dedup_pe)
+            print(run_cmd(cmd_dedup_pe))
+            print("****** NOW RUNNING COMMAND ******: " + cmd_dedup_mp)
+            print(run_cmd(cmd_dedup_mp))
+
+		if self.libType == "pe-mp-se":
+			print("****** NOW RUNNING COMMAND ******: " + cmd_dedup_pe)
+			print(run_cmd(cmd_dedup_pe))
+			print("****** NOW RUNNING COMMAND ******: " + cmd_dedup_mp)
+			print(run_cmd(cmd_dedup_mp))
+			print("****** NOW RUNNING COMMAND ******: " + cmd_dedup_se)
+			print(run_cmd(cmd_dedup_se))
+
+        if self.libType == "ilpe":
+            print("****** NOW RUNNING COMMAND ******: " + cmd_dedup_pe_il)
+            print(run_cmd(cmd_dedup_pe_il))
+
+        if self.libType == "ilmp":
+            print("****** NOW RUNNING COMMAND ******: " + cmd_dedup_mp_il)
+            print(run_cmd(cmd_dedup_mp_il))
+
+        if self.libType == "ilpe-ilmp":
+            print("****** NOW RUNNING COMMAND ******: " + cmd_dedup_pe_il)
+            print(run_cmd(cmd_dedup_pe_il))
+            print("****** NOW RUNNING COMMAND ******: " + cmd_dedup_mp_il)
+            print(run_cmd(cmd_dedup_mp_il))
+		if self.libType == "ilpe-ilmp-se":
+			print("****** NOW RUNNING COMMAND ******: " + cmd_dedup_pe_il)
+			print(run_cmd(cmd_dedup_pe_il))
+			print("****** NOW RUNNING COMMAND ******: " + cmd_dedup_mp_il)
+			print(run_cmd(cmd_dedup_mp_il))
+			print("****** NOW RUNNING COMMAND ******: " + cmd_dedup_se)
+			print(run_cmd(cmd_dedup_se))
+
+
+class deDupSamples(luigi.Task):
+    projectName=GlobalParameter().projectName
+    libType = luigi.ChoiceParameter(description="Choose From['pe: paired-end','mp: mate-pair','pe-mp: paired-end and mate-pair',"
+                                                "'ilpe: interleaved paired-end','ilmp: interleaved mate-pair',"
+                                                "'ilpe-ilmp: interleaved paired-end and interleaved mate-pair']",
+                                    choices=["se","pe", "mp", "pe-mp","pe-mp-se", "ilpe", "ilmp", "ilpe-ilmp"], var_type=str)
+
+
+    def requires(self):
+        if self.libType == "pe":
+            return [deDup(libType=self.libType,
+                        sampleName=i)
+                    for i in [line.strip()
+                              for line in
+                              open((os.path.join(os.getcwd(), GlobalParameter().projectName, "pe_samples.lst")))]]
+        if self.libType == "mp":
+            return [deDup(libType=self.libType,
+                           sampleName=i)
+                    for i in [line.strip()
+                              for line in
+                              open((os.path.join(os.getcwd(), GlobalParameter().projectName, "mp_samples.lst")))]]
+        if self.libType == "pe-mp":
+            return [
+                        [deDup(libType="pe",sampleName=i)
+                                for i in [line.strip()
+                                          for line in
+                                                open((os.path.join(os.getcwd(), GlobalParameter().projectName, "pe_samples.lst")))]],
+
+                        [deDup(libType="mp", sampleName=i)
+                                for i in [line.strip()
+                                          for line in
+                                                open((os.path.join(os.getcwd(), GlobalParameter().projectName, "mp_samples.lst")))]]
+
+		if self.libType == "pe-mp-se":
+            return [
+                        [deDup(libType="pe",sampleName=i)
+                                for i in [line.strip()
+                                          for line in
+                                                open((os.path.join(os.getcwd(), GlobalParameter().projectName, "pe_samples.lst")))]],
+
+                        [deDup(libType="mp", sampleName=i)
+                                for i in [line.strip()
+                                          for line in
+                                                open((os.path.join(os.getcwd(), GlobalParameter().projectName, "mp_samples.lst")))]],
+					    [deDup(libType="se", sampleName=i)
+                                for i in [line.strip()
+                                          for line in
+                                                open((os.path.join(os.getcwd(), GlobalParameter().projectName, "se_samples.lst")))]]
+          ]
+
+        if self.libType == "ilpe":
+            return [deDup(libType=self.libType,
+                        sampleName=i)
+                    for i in [line.strip()
+                              for line in
+                              open((os.path.join(os.getcwd(), GlobalParameter().projectName, "pe_il_samples.lst")))]]
+
+
+        if self.libType == "ilmp":
+            return [deDup(libType=self.libType,
+                           sampleName=i)
+                    for i in [line.strip()
+                              for line in
+                              open((os.path.join(os.getcwd(), GlobalParameter().projectName, "mp_il_samples.lst")))]]
+
+
+        if self.libType == "ilpe-ilmp-se":
+            return [
+                [deDup(libType="ilpe", sampleName=i)
+                 for i in [line.strip()
+                           for line in
+                           open((os.path.join(os.getcwd(), GlobalParameter().projectName, "pe_il_samples.lst")))]],
+
+                [deDup(libType="ilmp", sampleName=i)
+                 for i in [line.strip()
+                           for line in
+                           open((os.path.join(os.getcwd(), GlobalParameter().projectName, "mp_il_samples.lst")))]],
+				[deDup(libType="se", sampleName=i)
+				for i in [line.strip()
+							for line in
+							open((os.path.join(os.getcwd(), GlobalParameter().projectName, "se_samples.lst")))]]
+                 ]
+
+
+    def output(self):
+        timestamp = time.strftime('%Y%m%d.%H%M%S', time.localtime())
+        return luigi.LocalTarget('task.deduplication.complete.{t}'.format(t=timestamp))
+
+    def run(self):
+        timestamp = time.strftime('%Y%m%d.%H%M%S', time.localtime())
+        with self.output().open('w') as outfile:
+            outfile.write('deduplication finished at {t}'.format(t=timestamp))
